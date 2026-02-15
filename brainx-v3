@@ -3,6 +3,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 
+# Keep CLI output clean (dotenv@17 prints tips unless quiet)
+export DOTENV_CONFIG_QUIET="${DOTENV_CONFIG_QUIET:-true}"
+
 CMD="${1:-}"
 shift || true
 
