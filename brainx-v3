@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+
 CMD="${1:-}"
 shift || true
 
 case "$CMD" in
   health)
-    node "$(dirname "$0")/tests/smoke.js"
+    node "$ROOT/tests/smoke.js"
+    ;;
+  add|search|inject)
+    node "$ROOT/lib/cli.js" "$CMD" "$@"
     ;;
   *)
-    echo "brainx-v3 (WIP)"
-    echo "Commands: health"
+    node "$ROOT/lib/cli.js" --help
     exit 1
     ;;
 esac
