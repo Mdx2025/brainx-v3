@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CMD="${1:-}"
+shift || true
+
+case "$CMD" in
+  health)
+    node "$(dirname "$0")/tests/smoke.js"
+    ;;
+  *)
+    echo "brainx-v3 (WIP)"
+    echo "Commands: health"
+    exit 1
+    ;;
+esac
