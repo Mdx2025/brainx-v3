@@ -14,6 +14,10 @@ This repository is an implementation of the **BrainX V3 — Upgrade Specificatio
 - `scripts/` — migration and cleanup utilities
 - `tests/` — smoke / RAG tests
 
+## Documentation
+
+See [`docs/INDEX.md`](./docs/INDEX.md).
+
 ## Requirements
 
 - Node.js 18+ (Node 22 recommended)
