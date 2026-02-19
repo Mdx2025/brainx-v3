@@ -1,336 +1,210 @@
 # BrainX V3
 
-BrainX V3 is a lightweight **memory engine** built on **PostgreSQL + pgvector**, designed to act as a “shared brain” for multi-agent systems (e.g. OpenClaw).
+BrainX V3 is a **PostgreSQL + pgvector** based memory engine for multi-agent systems ([OpenClaw](https://github.com/openclaw/openclaw)).
 
-It provides a small CLI for:
+## Status
 
-- **Writing** memories (decisions, actions, notes, learnings)
-- **Retrieving** memories via vector similarity + metadata filters
-- **Injecting** prompt-ready memory snippets into LLM conversations
+✅ **Production Ready** — Active across all agents with shared centralized memory.
 
-This repository is an implementation of the **BrainX V3 — Upgrade Specification**.
+## Features
 
----
+- 🧠 **Semantic search** via OpenAI embeddings (text-embedding-3-small)
+- 🗃️ **PostgreSQL + pgvector** for persistent vector storage
+- 🔍 **On-demand injection** — only fetch context when relevant
+- 🤖 **Multi-agent support** — all agents read/write the same database
+- 📊 **Tiered memory** — hot, warm, cold, archive with importance scoring
+- 🏷️ **Metadata filtering** — by context, tier, tags, agent, importance
 
-## Table of contents
+## Architecture
 
-- [Concepts](#concepts)
-- [Repository layout](#repository-layout)
-- [Requirements](#requirements)
-- [Quickstart](#quickstart)
-- [Configuration](#configuration)
-- [Database setup](#database-setup)
-- [CLI reference (common tasks)](#cli-reference-common-tasks)
-- [Scripts](#scripts)
-- [Tests](#tests)
-- [How retrieval ranking works](#how-retrieval-ranking-works)
-- [Security notes](#security-notes)
-- [Documentation (full)](#documentation-full)
-
----
-
-## Concepts
-
-### Memory item
-
-A memory item is one row in `brainx_memories`:
-
-- `type`: what kind of memory it is (decision/action/note/learning…)
-- `content`: the text payload
-- `context`: an optional scope key (exact-match)
-- `tier`: hot/warm/cold/archive (used as a ranking prior)
-- `importance`: 1..10 (used as a ranking prior)
-- `tags`: free-form labels
-- `embedding`: a vector representation used for semantic search
-
-### “Inject” output
-
-The `inject` command is meant to be copy/pasted directly into an LLM prompt (or programmatically inserted).
-It outputs a compact block with a metadata header per item, then the content.
-
----
-
-## Repository layout
-
-- `brainx-v3` — small bash wrapper around the Node CLI
-- `lib/cli.js` — implements `add`, `search`, `inject`
-- `lib/openai-rag.js` — embeddings + Postgres vector search
-- `lib/db.js` — PostgreSQL pool and helpers
-- `sql/v3-schema.sql` — schema for memories + supporting tables
-- `scripts/` — migration/import/cleanup utilities
-- `tests/` — smoke + end-to-end RAG tests
-- `docs/` — detailed documentation set
-
----
-
-## Requirements
-
-- Node.js **18+** (Node **22** recommended)
-- PostgreSQL **14+** (15+ recommended)
-- `pgvector` extension installed in your Postgres
-
----
-
-## Quickstart
-
-### 1) Install dependencies
-
-```bash
-pnpm install
-# or
-npm install
+```
+Agent A ──┐                    ┌── brainx search
+Agent B ──┤── brainx CLI ──── │── brainx add
+Agent C ──┤    (Node.js)       │── brainx inject
+Agent D ──┘        │           └── brainx health
+                   ▼
+          PostgreSQL + pgvector
+          (centralized memory)
 ```
 
-### 2) Create `.env`
+- **Storage**: PostgreSQL with pgvector extension
+- **Embeddings**: OpenAI text-embedding-3-small (1536 dimensions)
+- **Search**: Cosine similarity + metadata filtering
+- **Injection**: On-demand (not automatic) — avoids token waste
+
+## Philosophy: On-Demand Injection
+
+Unlike V2 (automatic on every request), **V3 uses manual injection**:
+
+- ✅ Call `inject` **only when relevant**
+- ✅ Avoid token waste
+- ✅ More specific queries = better results
+
+## Installation
 
 ```bash
+# 1. Clone
+git clone https://github.com/Mdx2025/brainx-v3.git
+cd brainx-v3
+
+# 2. Install dependencies
+pnpm install  # or npm install
+
+# 3. Configure environment
 cp .env.example .env
-```
+# Edit: DATABASE_URL, OPENAI_API_KEY
 
-Edit `.env` (minimum required):
-
-- `DATABASE_URL=...`
-- `OPENAI_API_KEY=...`
-
-### 3) Install schema (pgvector + tables)
-
-1) Ensure `vector` extension exists:
-
-```sql
-CREATE EXTENSION IF NOT EXISTS vector;
-```
-
-2) Apply schema:
-
-```bash
+# 4. Setup database (requires PostgreSQL with pgvector)
 psql "$DATABASE_URL" -f sql/v3-schema.sql
-```
 
-### 4) Run a health check
-
-```bash
+# 5. Verify
 ./brainx-v3 health
 ```
 
-### 5) Add and retrieve a memory
+### OpenClaw Integration
+
+BrainX V3 works as a native **OpenClaw skill**:
 
 ```bash
-./brainx-v3 add \
-  --type decision \
-  --content "Default model is openai-codex/gpt-5.3-codex" \
-  --context openclaw \
+# Install as skill
+cp -r brainx-v3 ~/.openclaw/skills/brainx-v3
+
+# Add to PATH in openclaw.json
+# "env": { "PATH": "/home/clawd/.openclaw/skills/brainx-v3:$PATH" }
+
+# Add DATABASE_URL to openclaw.json env
+# "DATABASE_URL": "postgresql://brainx:pass@127.0.0.1:5432/brainx_v3"
+
+# Now all agents can use: brainx search, brainx add, brainx inject
+```
+
+The `SKILL.md` file provides OpenClaw with tool definitions (`brainx_add_memory`, `brainx_search`, `brainx_inject`, `brainx_health`).
+
+## CLI Reference
+
+### Health Check
+```bash
+./brainx-v3 health
+# BrainX V3 health: OK
+# - pgvector: yes
+# - brainx tables: 6
+```
+
+### Add Memory
+```bash
+./brainx-v3 add --type decision \
+  --content "Use embeddings-3-small to reduce costs" \
+  --context "openclaw" \
   --tier hot \
   --importance 9 \
-  --tags models,openclaw \
-  --agent coder
-
-./brainx-v3 search --query "default model" --limit 5 --minSimilarity 0.2
-```
-
----
-
-## Configuration
-
-BrainX V3 is configured via environment variables.
-
-### Required
-
-- `DATABASE_URL`
-- `OPENAI_API_KEY`
-
-### Embeddings
-
-- `OPENAI_EMBEDDING_MODEL` (default: `text-embedding-3-small`)
-- `OPENAI_EMBEDDING_DIMENSIONS` (default: `1536`)
-
-Important:
-
-- `OPENAI_EMBEDDING_DIMENSIONS` must match the schema type: `vector(1536)`.
-- If you change dimensions, you must update schema + re-embed existing rows.
-
-### Shared env file (optional)
-
-- `BRAINX_ENV=/path/to/shared.env`
-
-`lib/db.js` and `lib/openai-rag.js` support loading environment from `BRAINX_ENV` if the main env vars are not present.
-This is useful when multiple agents share one secrets file.
-
-### Inject formatting (optional)
-
-- `BRAINX_INJECT_DEFAULT_TIER` (default: `warm_or_hot`)
-- `BRAINX_INJECT_MAX_CHARS_PER_ITEM` (default: `2000`)
-- `BRAINX_INJECT_MAX_LINES_PER_ITEM` (default: `80`)
-
----
-
-## Database setup
-
-### pgvector
-
-You need pgvector installed on your Postgres server.
-
-- Many managed Postgres providers support it.
-- On self-hosted Postgres, install your distro package (varies by OS), then:
-
-```sql
-CREATE EXTENSION IF NOT EXISTS vector;
-```
-
-### Apply schema
-
-```bash
-psql "$DATABASE_URL" -f sql/v3-schema.sql
-```
-
-Tables created include:
-
-- `brainx_memories` (main table)
-- `brainx_learning_details`
-- `brainx_trajectories`
-- `brainx_context_packs`
-- `brainx_session_snapshots`
-- `brainx_pilot_log`
-
----
-
-## CLI reference (common tasks)
-
-### Help
-
-```bash
-./brainx-v3 --help
-```
-
-### Health check
-
-```bash
-./brainx-v3 health
-```
-
-### Add memory
-
-```bash
-./brainx-v3 add --type note --content "..." \
-  --context "project-x" \
-  --tier warm \
-  --importance 5 \
-  --tags a,b,c \
+  --tags config,openai \
   --agent coder
 ```
 
-Notes:
+**Types:** `decision`, `action`, `note`, `learning`, `gotcha`
+**Tiers:** `hot`, `warm`, `cold`, `archive`
 
-- If you omit `--id`, the CLI generates one.
-- `add` is an **upsert** by id.
-
-### Search (JSON output)
-
+### Search Memories
 ```bash
-./brainx-v3 search --query "how do we deploy?" \
+./brainx-v3 search --query "deployment strategy" \
   --limit 10 \
   --minSimilarity 0.15 \
-  --minImportance 3
+  --context project-x \
+  --tier hot
 ```
 
-Filter by exact context:
+### Inject Context (Prompt-Ready)
+```bash
+./brainx-v3 inject --query "what did we decide?" --limit 8
+```
+
+Output format (ready to paste into LLM prompts):
+```
+[sim:0.82 imp:9 tier:hot type:decision agent:coder ctx:openclaw]
+Use embeddings-3-small to reduce costs...
+
+---
+
+[sim:0.41 imp:6 tier:warm type:note agent:writer ctx:project-x]
+Another memory...
+```
+
+## Injection Limits
+
+To prevent prompt bloat:
+
+| Limit | Default | Env Override | Flag Override |
+|-------|---------|--------------|---------------|
+| Max chars per item | 2000 | `BRAINX_INJECT_MAX_CHARS_PER_ITEM` | `--maxCharsPerItem` |
+| Max lines per item | 80 | `BRAINX_INJECT_MAX_LINES_PER_ITEM` | `--maxLinesPerItem` |
+
+## When to Use
+
+✅ **DO use when:**
+- User references past decisions
+- Resuming long-running tasks
+- "What did we decide about X?"
+- Need context from previous work
+- Sharing knowledge between agents
+
+❌ **DON'T use when:**
+- Simple isolated questions
+- General knowledge queries
+- Code review without context needs
+- Every message "just in case"
+
+## Repository Layout
+
+```
+brainx-v3/
+├── brainx-v3              # CLI entry point (bash)
+├── brainx                 # Wrapper for PATH usage
+├── SKILL.md               # OpenClaw skill definition
+├── lib/
+│   ├── cli.js             # Command implementations
+│   ├── openai-rag.js      # Embeddings + vector search
+│   └── db.js              # PostgreSQL connection pool
+├── sql/
+│   └── v3-schema.sql      # Database schema (6 tables)
+├── scripts/               # Migration utilities
+├── docs/                  # Architecture documentation
+└── tests/                 # Test suite
+```
+
+## Database Schema
+
+6 tables:
+
+| Table | Purpose |
+|-------|---------|
+| `brainx_memories` | Main memory store with embeddings |
+| `brainx_learning_details` | Extended learning metadata |
+| `brainx_trajectories` | Agent action trajectories |
+| `brainx_context_packs` | Bundled context snapshots |
+| `brainx_session_snapshots` | Session summaries |
+| `brainx_pilot_log` | Audit/pilot log |
+
+## Environment Variables
 
 ```bash
-./brainx-v3 search --query "railway" --context emailbot
+# Required
+DATABASE_URL=postgresql://user:pass@host:5432/brainx_v3
+OPENAI_API_KEY=sk-...
+
+# Optional
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small       # default
+OPENAI_EMBEDDING_DIMENSIONS=1536                     # default
+BRAINX_INJECT_MAX_CHARS_PER_ITEM=2000
+BRAINX_INJECT_MAX_LINES_PER_ITEM=80
+BRAINX_INJECT_DEFAULT_TIER=warm_or_hot
 ```
 
-Filter by tier:
+## Upgrading from V2
 
 ```bash
-./brainx-v3 search --query "postgres" --tier hot
+node scripts/migrate-v2-to-v3.js
 ```
 
-### Inject (prompt-ready output)
+## License
 
-```bash
-./brainx-v3 inject --query "what did we decide about models?" --limit 8
-```
-
-Inject output looks like:
-
-```text
-[sim:0.62 imp:9 tier:hot type:decision agent:coder ctx:openclaw]
-Default model is openai-codex/gpt-5.3-codex
-
----
-
-[sim:0.41 imp:6 tier:warm type:note agent:system ctx:emailbot]
-Railway deploy pending confirmation...
-```
-
----
-
-## Scripts
-
-These are one-shot utilities (see also `docs/SCRIPTS.md`).
-
-- `scripts/migrate-v2-to-v3.js`
-  - migrates BrainX V2 JSON storage into V3 Postgres.
-- `scripts/import-workspace-memory-md.js`
-  - imports a `MEMORY.md` file by chunking into multiple `note` memories.
-- `scripts/dedup-supersede.js`
-  - supersedes exact duplicates by fingerprint.
-- `scripts/cleanup-low-signal.js`
-  - downranks/retier very short “low signal” memories.
-
----
-
-## Tests
-
-Run smoke test:
-
-```bash
-pnpm test
-# or
-npm test
-```
-
-Run end-to-end RAG test:
-
-```bash
-node tests/rag.js
-```
-
----
-
-## How retrieval ranking works
-
-`lib/openai-rag.js` ranks results with a simple composite score:
-
-- **Semantic similarity** (cosine)
-- **Importance boost**: `(importance/10) * 0.25`
-- **Tier adjustment**:
-  - `hot`: +0.15
-  - `warm`: +0.05
-  - `cold`: -0.05
-  - `archive`: -0.10
-
-Queries also:
-
-- filter out superseded memories: `superseded_by IS NULL`
-- update access tracking: `last_accessed` and `access_count`
-
----
-
-## Security notes
-
-- Do **not** commit `.env`.
-- Treat `OPENAI_API_KEY` as a secret; prefer systemd/secret managers in production.
-- If a key is accidentally exposed in logs/chat, rotate it.
-
----
-
-## Documentation (full)
-
-Start here: [`docs/INDEX.md`](./docs/INDEX.md)
-
-- [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)
-- [`docs/SCHEMA.md`](./docs/SCHEMA.md)
-- [`docs/CLI.md`](./docs/CLI.md)
-- [`docs/SCRIPTS.md`](./docs/SCRIPTS.md)
-- [`docs/TESTS.md`](./docs/TESTS.md)
-- [`docs/CONFIG.md`](./docs/CONFIG.md)
+MIT
