@@ -4,7 +4,9 @@ BrainX V3 is a **PostgreSQL + pgvector** based memory engine for multi-agent sys
 
 ## Status
 
-✅ **Production Ready** — Active across all agents with shared centralized memory.
+✅ **Production Ready** — Active across all agents with shared centralized memory.  
+🛡️ **Disaster Recovery** — Full backup/restore system included.  
+🤖 **Auto-Injection** — Context automatically injected on agent startup.
 
 ## Features
 
@@ -14,6 +16,8 @@ BrainX V3 is a **PostgreSQL + pgvector** based memory engine for multi-agent sys
 - 🤖 **Multi-agent support** — all agents read/write the same database
 - 📊 **Tiered memory** — hot, warm, cold, archive with importance scoring
 - 🏷️ **Metadata filtering** — by context, tier, tags, agent, importance
+- 🛡️ **Disaster recovery** — Complete backup/restore system
+- ⚡ **Auto-inject hook** — Automatic context loading on agent bootstrap
 
 ## Architecture
 
@@ -22,6 +26,7 @@ Agent A ──┐                    ┌── brainx search
 Agent B ──┤── brainx CLI ──── │── brainx add
 Agent C ──┤    (Node.js)       │── brainx inject
 Agent D ──┘        │           └── brainx health
+                   │
                    ▼
           PostgreSQL + pgvector
           (centralized memory)
@@ -30,17 +35,9 @@ Agent D ──┘        │           └── brainx health
 - **Storage**: PostgreSQL with pgvector extension
 - **Embeddings**: OpenAI text-embedding-3-small (1536 dimensions)
 - **Search**: Cosine similarity + metadata filtering
-- **Injection**: On-demand (not automatic) — avoids token waste
+- **Injection**: Automatic via OpenClaw hook + on-demand manual
 
-## Philosophy: On-Demand Injection
-
-Unlike V2 (automatic on every request), **V3 uses manual injection**:
-
-- ✅ Call `inject` **only when relevant**
-- ✅ Avoid token waste
-- ✅ More specific queries = better results
-
-## Installation
+## Quick Start
 
 ```bash
 # 1. Clone
@@ -61,7 +58,67 @@ psql "$DATABASE_URL" -f sql/v3-schema.sql
 ./brainx-v3 health
 ```
 
-### OpenClaw Integration
+## Auto-Injection (New!)
+
+BrainX V3 now includes an **OpenClaw hook** that automatically injects relevant memories when agents start:
+
+```bash
+# On every agent:bootstrap event, the hook:
+# 1. Queries recent hot/warm memories from PostgreSQL
+# 2. Generates BRAINX_CONTEXT.md in the workspace
+# 3. Agent reads this file as part of session initialization
+```
+
+**Configuration** in `~/.openclaw/openclaw.json`:
+```json
+{
+  "hooks": {
+    "internal": {
+      "entries": {
+        "brainx-auto-inject": {
+          "enabled": true,
+          "limit": 5,
+          "tier": "hot+warm",
+          "minImportance": 5
+        }
+      }
+    }
+  }
+}
+```
+
+## Disaster Recovery 🛡️
+
+### Create Backup
+
+```bash
+# Full backup (database + configs + hooks)
+./scripts/backup-brainx.sh ~/backups
+
+# Output: ~/backups/brainx-v3_backup_YYYYMMDD_HHMMSS.tar.gz
+```
+
+### Restore from Backup
+
+```bash
+# On new VPS or after disaster
+./scripts/restore-brainx.sh brainx-v3_backup_YYYYMMDD.tar.gz --force
+```
+
+### What's Protected?
+
+| Component | Included | Critical? |
+|-----------|----------|-----------|
+| PostgreSQL database (all memories) | ✅ Yes | 🔴 CRITICAL |
+| OpenClaw configuration (hooks) | ✅ Yes | 🟡 Medium |
+| Environment variables (.env) | ✅ Yes | 🔴 CRITICAL |
+| Skill files | ✅ Yes | 🟢 Reinstallable |
+| Workspace brainx.md files | ✅ Yes | 🟢 Recreatable |
+| Auto-inject hooks | ✅ Yes | 🟡 Medium |
+
+See [RESILIENCE.md](RESILIENCE.md) for complete disaster recovery documentation.
+
+## OpenClaw Integration
 
 BrainX V3 works as a native **OpenClaw skill**:
 
@@ -101,7 +158,7 @@ The `SKILL.md` file provides OpenClaw with tool definitions (`brainx_add_memory`
   --agent coder
 ```
 
-**Types:** `decision`, `action`, `note`, `learning`, `gotcha`
+**Types:** `decision`, `action`, `note`, `learning`, `gotcha`  
 **Tiers:** `hot`, `warm`, `cold`, `archive`
 
 ### Search Memories
@@ -160,13 +217,20 @@ brainx-v3/
 ├── brainx-v3              # CLI entry point (bash)
 ├── brainx                 # Wrapper for PATH usage
 ├── SKILL.md               # OpenClaw skill definition
+├── RESILIENCE.md          # 🛡️ Disaster recovery guide
 ├── lib/
 │   ├── cli.js             # Command implementations
 │   ├── openai-rag.js      # Embeddings + vector search
 │   └── db.js              # PostgreSQL connection pool
+├── hook/                  # 🆕 OpenClaw auto-inject hook
+│   ├── HOOK.md            # Hook documentation
+│   └── inject.sh          # Hook script
+├── scripts/               # Utilities
+│   ├── backup-brainx.sh   # 🆕 Backup script
+│   ├── restore-brainx.sh  # 🆕 Restore script
+│   └── migrate-v2-to-v3.js
 ├── sql/
 │   └── v3-schema.sql      # Database schema (6 tables)
-├── scripts/               # Migration utilities
 ├── docs/                  # Architecture documentation
 └── tests/                 # Test suite
 ```
@@ -203,6 +267,18 @@ BRAINX_INJECT_DEFAULT_TIER=warm_or_hot
 
 ```bash
 node scripts/migrate-v2-to-v3.js
+```
+
+## Automatic Backups (Recommended)
+
+Add to `crontab -e`:
+
+```bash
+# Daily backup at 3 AM
+0 3 * * * /path/to/brainx-v3/scripts/backup-brainx.sh /path/to/backups >> /path/to/backups/backup.log 2>&1
+
+# Clean old backups (keep 7 days)
+0 4 * * * find /path/to/backups -name "brainx-v3_backup_*.tar.gz" -mtime +7 -delete
 ```
 
 ## License
